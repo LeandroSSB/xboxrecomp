@@ -948,9 +948,12 @@ static void clear_surface(uint32_t param)
     }
 
     {
-        /* SET_CLEAR_RECT_*, folded into the surface clip: the rectangle the
-         * title asked to clear, not always all of it (letterboxed frames).
-         * The max side is inclusive as sent; real pixels, like the clip. */
+        /* SET_CLEAR_RECT_*: the rectangle alone, clamped to the surface --
+         * not intersected with the surface clip. SSX 3 clears its 128x128
+         * shadow maps whole through a 124x124 clip and samples them
+         * clamped, so the ring the clip leaves has to take the clear
+         * colour (the xemu rule; the same reading PR #212 lands). The max
+         * side is inclusive as sent; real pixels, like the clip. */
         uint32_t cx0 = s_gpu.clip_x, cw = s_gpu.clip_w;
         uint32_t cy0 = s_gpu.clip_y, ch = s_gpu.clip_h;
         uint32_t sx = (uint32_t)s_gpu.aa_sx, sy = (uint32_t)s_gpu.aa_sy;
@@ -959,10 +962,8 @@ static void clear_surface(uint32_t param)
             uint32_t x1 = (s_gpu.clear_rw + 1) * sx;
             uint32_t y0 = s_gpu.clear_ry * sy;
             uint32_t y1 = (s_gpu.clear_rh + 1) * sy;
-            if (x0 < cx0) x0 = cx0;
-            if (y0 < cy0) y0 = cy0;
-            if (x1 > cx0 + cw) x1 = cx0 + cw;
-            if (y1 > cy0 + ch) y1 = cy0 + ch;
+            if (x1 > cw) x1 = cw;
+            if (y1 > ch) y1 = ch;
             cx0 = x0; cy0 = y0;
             cw = x1 > x0 ? x1 - x0 : 0;
             ch = y1 > y0 ? y1 - y0 : 0;
@@ -2607,8 +2608,9 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      * them apart. area > 0 is the fill loop's all-edge-functions-positive
      * side, which in window coordinates (y down) is clockwise. Front face
      * 0x900 = CW, 0x901 = CCW, the GL enums; left unwritten it counts as
-     * CCW, the GL reset. Cull face 0x404 = FRONT, 0x405 = BACK, 0x406 =
-     * FRONT_AND_BACK, likewise. A back end culls its own (it is handed
+     * CCW, the GL reset. Cull face 0x404 = FRONT, 0x405 = BACK, 0x408 =
+     * FRONT_AND_BACK (the NV097 enum; GL's 0x406 is not what the register
+     * carries), likewise. A back end culls its own (it is handed
      * everything); this is the CPU rasteriser's copy of the test. */
     if (s_reg[0x0308 / 4]) {                   /* SET_CULL_FACE_ENABLE */
         int front_is_ccw = s_reg[0x03A0 / 4] != 0x900;
@@ -2616,7 +2618,7 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
         int tri_is_front = front_is_ccw ? tri_is_ccw : !tri_is_ccw;
         uint32_t cf = s_reg[0x039C / 4];       /* SET_CULL_FACE */
 
-        if (cf == 0x406
+        if (cf == 0x408
          || (cf == 0x404 && tri_is_front)
          || (cf == 0x405 && !tri_is_front)) {
             s_gpu.tris_culled++;
