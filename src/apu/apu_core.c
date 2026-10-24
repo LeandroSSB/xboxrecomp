@@ -1213,6 +1213,64 @@ static void *mcpx_apu_frame_thread(void *arg)
                 d->sample_count -= ssl;
                 qatomic_or(&d->regs[NV_PAPU_ISTS], NV_PAPU_ISTS_SSLINTSTS);
                 d->set_irq = true;
+                /* RECOMP_APU_FEV_TICK: raise FEVINTSTS with the tick too.
+                 *
+                 * Black's DirectSound service routine queues its DPC on bit 6
+                 * alone; the DPC is what runs the front-end completion that
+                 * fills the persist-stream voices. During boot no voice has
+                 * completed yet, so bit 6 -- which set_notify_status raises
+                 * on real voice completions -- never rises, the DPC never
+                 * runs, and those voices sit at their first SSL segment
+                 * forever (observed: voices 64-69 at pos 1/31 through a
+                 * whole run while a streaming voice progressed normally).
+                 * A spurious DPC is not an error on hardware -- the handler
+                 * re-checks its own queues -- so riding the tick is the
+                 * bring-up probe for exactly this gate. */
+                {
+                    static int fev = -1;
+                    if (fev < 0)
+                        fev = apu_env_on("RECOMP_APU_FEV_TICK");
+                    if (fev) {
+                        qatomic_or(&d->regs[NV_PAPU_ISTS],
+                                   NV_PAPU_ISTS_FEVINTSTS);
+                        d->set_irq = true;
+                    }
+                }
+            }
+        }
+
+        /* RECOMP_APU_EP_CURSOR: advance the EP output FIFO cursors.
+         *
+         * On hardware the encode processor sinks the mix into its output
+         * FIFOs and owns these cursors; DirectSound initialises them and
+         * then waits for the position to reach a target (Black: EPOFCUR1
+         * must run from its base to base+0x1800 before init proceeds, and
+         * the wait sits in a KeStall loop). The DSP is a passthrough stub
+         * here, so nothing ever moves them. Units are bytes -- the title's
+         * own SSL came from the same byte counter -- and the EP produces
+         * one stereo s16 frame per sample: 4 bytes each. */
+        {
+            static int ep = -1;
+            if (ep < 0)
+                ep = apu_env_on("RECOMP_APU_EP_CURSOR");
+            if (ep) {
+                static const uint32_t fifo[2][3] = {
+                    { NV_PAPU_EPOFBASE0, NV_PAPU_EPOFEND0, NV_PAPU_EPOFCUR0 },
+                    { NV_PAPU_EPOFBASE0 + 0x10, NV_PAPU_EPOFEND0 + 0x10,
+                      NV_PAPU_EPOFCUR0 + 0x10 },
+                };
+                int i;
+                for (i = 0; i < 2; i++) {
+                    uint32_t base = qatomic_read(&d->regs[fifo[i][0]]);
+                    uint32_t end = qatomic_read(&d->regs[fifo[i][1]]);
+                    uint32_t cur = qatomic_read(&d->regs[fifo[i][2]]);
+                    if (!end || end <= base)
+                        continue;
+                    cur += NUM_SAMPLES_PER_FRAME * 4;
+                    if (cur >= end)
+                        cur = base + (cur - base) % (end - base);
+                    qatomic_set(&d->regs[fifo[i][2]], cur);
+                }
             }
         }
 
